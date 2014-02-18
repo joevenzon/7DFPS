@@ -57,13 +57,23 @@ private var stuck = false;
 private var stuck_delay = 0.0;
 private var tilt_correction : Vector3;
 private var distance_sleep = false;
-private var kSleepDistance = 20.0;
+//private var kSleepDistance = 20.0;
+private var kSleepDistance = 30.0;
 
 var target_pos : Vector3;
 enum CameraPivotState {DOWN, WAIT_UP, UP, WAIT_DOWN};
 var camera_pivot_state = CameraPivotState.WAIT_DOWN;
 var camera_pivot_delay = 0.0;
 var camera_pivot_angle = 0.0;
+
+// network sync
+var syncTime : float = 0;
+var syncDelta : float = 0.1;
+var lastSyncTime : float = 0;
+var lastNetPosition = Vector3.zero;
+var lastNetRotation = Quaternion.identity;
+var netPosition = Vector3.zero;
+var netRotation = Quaternion.identity;
 
 function PlaySoundFromGroup(group : Array, volume : float){
 	if(group.length == 0){
@@ -73,12 +83,38 @@ function PlaySoundFromGroup(group : Array, volume : float){
 	audiosource_effect.PlayOneShot(group[which_shot], volume * PlayerPrefs.GetFloat("sound_volume", 1.0));
 }
 
+@RPC
+function PlayTurrentFireFX()
+{
+	var point_muzzle_flash = gun_pivot.FindChild("gun").FindChild("point_muzzleflash");
+	Instantiate(muzzle_flash, point_muzzle_flash.position, point_muzzle_flash.rotation);
+	PlaySoundFromGroup(sound_gunshot, 1.0);
+}
+
+@RPC
+function PlayAlertFX(alert : boolean)
+{
+	if (alert)
+		audiosource_effect.PlayOneShot(sound_alert, 0.3 * PlayerPrefs.GetFloat("sound_volume", 1.0));
+	else
+		audiosource_effect.PlayOneShot(sound_unalert, 0.3 * PlayerPrefs.GetFloat("sound_volume", 1.0));
+}
+
 function GetTurretLightObject() : GameObject {
 	return transform.FindChild("gun pivot").FindChild("camera").FindChild("light").gameObject;
 }
 
 function GetDroneLightObject() : GameObject {
 	return transform.FindChild("camera_pivot").FindChild("camera").FindChild("light").gameObject;
+}
+
+function GetLightObject() : GameObject {
+	switch(robot_type){
+		case RobotType.STATIONARY_TURRET:
+			return GetTurretLightObject();
+		case RobotType.SHOCK_DRONE:
+			return GetDroneLightObject();
+	}
 }
 
 function GetDroneLensFlareObject() : GameObject {
@@ -90,9 +126,11 @@ function RandomOrientation() : Quaternion {
 	return Quaternion.EulerAngles(Random.Range(0,360),Random.Range(0,360),Random.Range(0,360));
 }
 
-function Damage(obj : GameObject){
+@RPC
+function DamageInternal(objname : String, objposition : Vector3)
+{
 	var damage_done = false;
-	if(obj.name == "battery" && battery_alive){
+	if(objname == "battery" && battery_alive){
 		battery_alive = false;
 		motor_alive = false;
 		camera_alive = false;
@@ -103,34 +141,64 @@ function Damage(obj : GameObject){
 		PlaySoundFromGroup(sound_damage_battery,1.0);
 		rotation_x.target_state = 40.0;
 		damage_done = true;
-	} else if((obj.name == "pivot motor" || obj.name == "motor") && motor_alive){
+	} else if((objname == "pivot motor" || objname == "motor") && motor_alive){
 		motor_alive = false;
 		PlaySoundFromGroup(sound_damage_motor,1.0);
 		damage_done = true;
-	} else if(obj.name == "power cable" && (camera_alive || trigger_alive)){
+	} else if(objname == "power cable" && (camera_alive || trigger_alive)){
 		camera_alive = false;
 		damage_done = true;
 		PlaySoundFromGroup(sound_damage_battery,1.0);
 		trigger_alive = false;
-	} else if(obj.name == "ammo box" && ammo_alive){
+	} else if(objname == "ammo box" && ammo_alive){
 		ammo_alive = false;
 		PlaySoundFromGroup(sound_damage_ammo,1.0);
 		damage_done = true;
-	} else if((obj.name == "gun" || obj.name == "shock prod") && barrel_alive){
+	} else if((objname == "gun" || objname == "shock prod") && barrel_alive){
 		barrel_alive = false;
 		PlaySoundFromGroup(sound_damage_gun,1.0);
 		damage_done = true;
-	} else if(obj.name == "camera" && camera_alive){
+	} else if(objname == "camera" && camera_alive){
 		camera_alive = false;
 		PlaySoundFromGroup(sound_damage_camera,1.0);
 		damage_done = true;
-	} else if(obj.name == "camera armor" && camera_alive){
+	} else if(objname == "camera armor" && camera_alive){
 		camera_alive = false;
 		PlaySoundFromGroup(sound_damage_camera,1.0);
 		damage_done = true;
 	}
 	if(damage_done){
-		Instantiate(electric_spark_obj, obj.transform.position, RandomOrientation());
+		Instantiate(electric_spark_obj, objposition, RandomOrientation());
+	}
+	
+	if (Network.isServer)
+	{
+		// update clients
+		// reuse this RPC
+		this.networkView.RPC(
+			"DamageInternal", 
+			RPCMode.Others, 
+			objname, 
+			objposition);
+	}
+}
+
+function Damage(obj : GameObject){
+	if ((!Network.isServer && !Network.isClient) || Network.isServer)
+	{
+		// server calls the internal function directly
+		// the internal function notifies clients
+		DamageInternal(obj.name, obj.transform.position);
+	}
+	else if (Network.isClient)
+	{
+		// clients send the RPC to the server, who updates authoritative state
+		// then sends updates to clients
+		this.networkView.RPC(
+			"DamageInternal", 
+			RPCMode.Server, 
+			obj.name, 
+			obj.transform.position);
 	}
 }
 
@@ -192,25 +260,55 @@ function Start () {
 			break;
 		case RobotType.SHOCK_DRONE:
 			audiosource_motor.maxDistance = 8;
+			audiosource_motor.rolloffMode = AudioRolloffMode.Linear;
 			audiosource_foley = gameObject.AddComponent(AudioSource);
 			audiosource_taser = gameObject.AddComponent(AudioSource);
 			audiosource_taser.rolloffMode = AudioRolloffMode.Linear;
 			audiosource_taser.loop = true;
 			audiosource_taser.clip = sound_gunshot[0];
+			audiosource_taser.maxDistance = 8;
 			break;
 	}
 	
 	initial_pos = transform.position;	
 	target_pos = initial_pos;
+	
+	syncTime = 0;
+	syncDelta = 0.1;
+	lastSyncTime = Time.time;
+	lastNetPosition = initial_pos;
+	lastNetRotation = transform.rotation;
+	netPosition = initial_pos;
+	netRotation = transform.rotation;
+}
+
+function UpdateClient()
+{
+	if (!Network.isClient) return;
+		
+	var p = GameObject.Find("Player");
+	
+	if (p != null)
+	{
+		var dist = Vector3.Distance(p.transform.position, transform.position);
+		var danger = Mathf.Max(0.0, 1.0 - dist/kMaxRange);
+		if(danger > 0.0){
+			danger = Mathf.Min(0.2, danger);
+		}
+		p.GetComponent(MusicScript).AddDangerLevel(danger);
+	}
 }
 
 function UpdateStationaryTurret() {
-	if(Vector3.Distance(GameObject.Find("Player").transform.position, transform.position) > kSleepDistance){
+	var players = GameObject.FindGameObjectsWithTag("Player");
+	
+	// for this check, we only care about the local player because we're just adjusting lights and sounds
+	if(GameObject.Find("Player") == null || 
+		Vector3.Distance(GameObject.Find("Player").transform.position, transform.position) > kSleepDistance){
 		GetTurretLightObject().light.shadows = LightShadows.None;		
 		if(audiosource_motor.isPlaying){
 			audiosource_motor.Stop();
 		}
-		return;
 	} else {
 		if(!audiosource_motor.isPlaying){
 			audiosource_motor.volume = PlayerPrefs.GetFloat("sound_volume", 1.0);
@@ -223,6 +321,22 @@ function UpdateStationaryTurret() {
 			GetTurretLightObject().light.shadows = LightShadows.None;
 		}
 	}
+	
+	var nearbyPlayer = false;
+	for (var p in players)
+	{
+		if (Vector3.Distance(p.transform.position, transform.position) < kSleepDistance)
+		{
+			nearbyPlayer = true;
+		}
+	}
+	
+	// early out!
+	if (!nearbyPlayer)
+	{
+		return;
+	}
+	
 	if(motor_alive){
 		switch(ai_state){
 			case AIState.IDLE:
@@ -266,10 +380,16 @@ function UpdateStationaryTurret() {
 		if(trigger_down){
 			if(gun_delay <= 0.0){
 				gun_delay += 0.1;
-				var point_muzzle_flash = gun_pivot.FindChild("gun").FindChild("point_muzzleflash");
-				Instantiate(muzzle_flash, point_muzzle_flash.position, point_muzzle_flash.rotation);
-				PlaySoundFromGroup(sound_gunshot, 1.0);
 				
+				if (!Network.isClient && !Network.isServer)
+				{
+					PlayTurrentFireFX();
+				}
+				else
+				{
+					this.networkView.RPC("PlayTurrentFireFX", RPCMode.All);
+				}
+				var point_muzzle_flash = gun_pivot.FindChild("gun").FindChild("point_muzzleflash");
 				var bullet = Instantiate(bullet_obj, point_muzzle_flash.position, point_muzzle_flash.rotation);
 				bullet.GetComponent(BulletScript).SetVelocity(point_muzzle_flash.forward * 300.0);
 				bullet.GetComponent(BulletScript).SetHostile();				
@@ -282,37 +402,62 @@ function UpdateStationaryTurret() {
 			gun_delay = Mathf.Max(0.0, gun_delay - Time.deltaTime);
 		}
 	}
-	var danger = 0.0;
-	var player = GameObject.Find("Player");
-	var dist = Vector3.Distance(player.transform.position, transform.position);
-	if(battery_alive){
-		danger += Mathf.Max(0.0, 1.0 - dist/kMaxRange);
-	}
-	if(camera_alive){
-		if(danger > 0.0){
-			danger = Mathf.Min(0.2, danger);
-		}
-		if(ai_state == AIState.AIMING || ai_state == AIState.FIRING){
-			danger = 1.0;
-		}
-		if(ai_state == AIState.ALERT || ai_state == AIState.ALERT_COOLDOWN){
-			danger += 0.5;
-		}
+	
+	var player : GameObject = null;
+	var playerDist = kMaxRange;
+	var sees_target = false;
+	for (var p : GameObject in players)
+	{
+		var danger = 0.0;
+		var dist = Vector3.Distance(p.transform.position, transform.position);
 		
-		var camera = transform.FindChild("gun pivot").FindChild("camera");
-		rel_pos = player.transform.position - camera.position;
-		var sees_target = false;
-		if(dist < kMaxRange && Vector3.Dot(camera.rotation*Vector3(0,-1,0), rel_pos.normalized) > 0.7){
-			var hit:RaycastHit;
-			if(!Physics.Linecast(camera.position, player.transform.position, hit, 1<<0)){
-				sees_target = true;
+		if(battery_alive){
+			danger += Mathf.Max(0.0, 1.0 - dist/kMaxRange);
+		}
+		if(camera_alive){
+			if(danger > 0.0){
+				danger = Mathf.Min(0.2, danger);
+			}
+			if(ai_state == AIState.AIMING || ai_state == AIState.FIRING){
+				danger = 1.0;
+			}
+			if(ai_state == AIState.ALERT || ai_state == AIState.ALERT_COOLDOWN){
+				danger += 0.5;
+			}
+			
+			var camera = transform.FindChild("gun pivot").FindChild("camera");
+			rel_pos = p.transform.position - camera.position;
+			if(dist < kMaxRange && Vector3.Dot(camera.rotation*Vector3(0,-1,0), rel_pos.normalized) > 0.7){
+				var hit:RaycastHit;
+				if(!Physics.Linecast(camera.position, p.transform.position, hit, 1<<0)){
+					sees_target = true;
+					if (dist < playerDist)
+					{
+						player = p;
+						playerDist = dist;
+					}
+				}
 			}
 		}
+		
+		p.GetComponent(MusicScript).AddDangerLevel(danger);
+	}
+	if (player == null) sees_target = false;
+	
+	if (camera_alive)
+	{
 		if(sees_target){
 			switch(ai_state){
 				case AIState.IDLE:
 					ai_state = AIState.ALERT;
-					audiosource_effect.PlayOneShot(sound_alert, 0.3 * PlayerPrefs.GetFloat("sound_volume", 1.0));
+					if (!Network.isClient && !Network.isServer)
+					{
+						PlayAlertFX(true);
+					}
+					else
+					{
+						this.networkView.RPC("PlayAlertFX", RPCMode.All, true);
+					}
 					alert_delay = kAlertDelay;
 					break;
 				case AIState.AIMING:
@@ -348,7 +493,14 @@ function UpdateStationaryTurret() {
 					alert_cooldown_delay -= Time.deltaTime;
 					if(alert_cooldown_delay <= 0.0){
 						ai_state = AIState.IDLE;
-						audiosource_effect.PlayOneShot(sound_unalert, 0.3 * PlayerPrefs.GetFloat("sound_volume", 1.0));
+						if (!Network.isClient && !Network.isServer)
+						{
+							PlayAlertFX(false);
+						}
+						else
+						{
+							this.networkView.RPC("PlayAlertFX", RPCMode.All, false);
+						}
 					}
 					break;
 			}
@@ -366,7 +518,7 @@ function UpdateStationaryTurret() {
 				break;
 		}
 	}
-	player.GetComponent(MusicScript).AddDangerLevel(danger);
+	
 	if(!camera_alive){
 		GetTurretLightObject().light.intensity *= Mathf.Pow(0.01, Time.deltaTime);
 	}
@@ -389,31 +541,57 @@ function UpdateStationaryTurret() {
 }
 
 function UpdateDrone() {
-	if(Vector3.Distance(GameObject.Find("Player").transform.position, transform.position) > kSleepDistance){
-		GetDroneLightObject().light.shadows = LightShadows.None;
+	var players = GameObject.FindGameObjectsWithTag("Player");
+	
+	var nearbyPlayer = false;
+	for (var p in players)
+	{
+		if (Vector3.Distance(p.transform.position, transform.position) < kSleepDistance)
+		{
+			nearbyPlayer = true;
+		}
+	}
+	
+	if (!nearbyPlayer)
+	{
 		if(motor_alive){
 			distance_sleep = true;
 			rigidbody.Sleep();
 		}
+	}
+	else
+	{
+		if(motor_alive && distance_sleep){
+			rigidbody.WakeUp();
+			distance_sleep = false;
+		}
+	}
+	
+	// non-authoritative sleep/audio stuff
+	if(GameObject.Find("Player") == null || 
+		Vector3.Distance(GameObject.Find("Player").transform.position, transform.position) > kSleepDistance){
+		GetDroneLightObject().light.shadows = LightShadows.None;
 		if(audiosource_motor.isPlaying){
 			audiosource_motor.Stop();
 		}
-		return;
 	} else {
 		if(GetDroneLightObject().light.intensity > 0.0){
 			GetDroneLightObject().light.shadows = LightShadows.Hard;
 		} else {
 			GetDroneLightObject().light.shadows = LightShadows.None;
 		}
-		if(motor_alive && distance_sleep){
-			rigidbody.WakeUp();
-			distance_sleep = false;
-		}
 		if(!audiosource_motor.isPlaying){
 			audiosource_motor.volume = PlayerPrefs.GetFloat("sound_volume", 1.0);
 			audiosource_motor.Play();
 		}
 	}
+	
+	// early out!
+	if (!nearbyPlayer)
+	{
+		return;
+	}
+	
 	var rel_pos = target_pos - transform.position;
 	if(motor_alive){		
 		var kFlyDeadZone = 0.2;
@@ -488,8 +666,20 @@ function UpdateDrone() {
 		if(gun_delay <= 0.0){
 			gun_delay = 0.1;	
 			Instantiate(muzzle_flash, transform.FindChild("point_spark").position, RandomOrientation());
-			if(Vector3.Distance(transform.FindChild("point_spark").position, GameObject.Find("Player").transform.position) < 1){;
-				GameObject.Find("Player").GetComponent(AimScript).Shock();
+			
+			for (var p : GameObject in players)
+			{
+				if (Vector3.Distance(p.transform.position, transform.FindChild("point_spark").position) < 1)
+				{
+					if ((!Network.isServer && !Network.isClient) || p.networkView.isMine)
+					{
+						p.GetComponent(AimScript).Shock();
+					}
+					else
+					{
+						p.networkView.RPC("Shock", RPCMode.Others);
+					}
+				}
 			}
 		}
 	} else {
@@ -550,29 +740,43 @@ function UpdateDrone() {
 		}
 		var cam_pivot = transform.FindChild("camera_pivot");
 		cam_pivot.localEulerAngles.x = camera_pivot_angle;
-		var player = GameObject.Find("Player");
-		var dist = Vector3.Distance(player.transform.position, transform.position);
-		var danger = Mathf.Max(0.0, 1.0 - dist/kMaxRange);
-		if(danger > 0.0){
-			danger = Mathf.Min(0.2, danger);
-		}
-		if(ai_state == AIState.AIMING || ai_state == AIState.FIRING){
-			danger = 1.0;
-		}
-		if(ai_state == AIState.ALERT || ai_state == AIState.ALERT_COOLDOWN){
-			danger += 0.5;
-		}
-		player.GetComponent(MusicScript).AddDangerLevel(danger);
 		
-		var camera = transform.FindChild("camera_pivot").FindChild("camera");
-		rel_pos = player.transform.position - camera.position;
+		// find the closest player we can see
+		var player : GameObject = null;
+		var playerDist = kMaxRange;
 		var sees_target = false;
-		if(dist < kMaxRange && Vector3.Dot(camera.rotation*Vector3(0,-1,0), rel_pos.normalized) > 0.7){
-			var hit:RaycastHit;
-			if(!Physics.Linecast(camera.position, player.transform.position, hit, 1<<0)){
-				sees_target = true;
+		for (var p in players)
+		{
+			var dist = Vector3.Distance(p.transform.position, transform.position);
+			var danger = Mathf.Max(0.0, 1.0 - dist/kMaxRange);
+			if(danger > 0.0){
+				danger = Mathf.Min(0.2, danger);
+			}
+			if(ai_state == AIState.AIMING || ai_state == AIState.FIRING){
+				danger = 1.0;
+			}
+			if(ai_state == AIState.ALERT || ai_state == AIState.ALERT_COOLDOWN){
+				danger += 0.5;
+			}
+			p.GetComponent(MusicScript).AddDangerLevel(danger);
+			
+			var camera = transform.FindChild("camera_pivot").FindChild("camera");
+			rel_pos = p.transform.position - camera.position;
+			if(dist < kMaxRange && Vector3.Dot(camera.rotation*Vector3(0,-1,0), rel_pos.normalized) > 0.7){
+				var hit:RaycastHit;
+				if(!Physics.Linecast(camera.position, p.transform.position, hit, 1<<0)){
+					sees_target = true;
+					
+					if (dist < playerDist)
+					{
+						player = p;
+						playerDist = dist;
+					}
+				}
 			}
 		}
+		if (player == null) sees_target = false;
+		
 		if(sees_target){
 			var new_target = player.transform.position + player.GetComponent(CharacterMotor).GetVelocity() * 
 							Mathf.Clamp(Vector3.Distance(player.transform.position, transform.position) * 0.1, 0.5, 1.0);
@@ -580,7 +784,14 @@ function UpdateDrone() {
 				case AIState.IDLE:
 					ai_state = AIState.ALERT;
 					alert_delay = kAlertDelay;
-					audiosource_effect.PlayOneShot(sound_alert, 0.3 * PlayerPrefs.GetFloat("sound_volume", 1.0));
+					if (!Network.isClient && !Network.isServer)
+					{
+						PlayAlertFX(true);
+					}
+					else
+					{
+						this.networkView.RPC("PlayAlertFX", RPCMode.All, true);
+					}
 					break;
 				case AIState.AIMING:
 					target_pos = new_target;
@@ -620,7 +831,14 @@ function UpdateDrone() {
 					alert_cooldown_delay -= Time.deltaTime;
 					if(alert_cooldown_delay <= 0.0){
 						ai_state = AIState.IDLE;
-						audiosource_effect.PlayOneShot(sound_unalert, 0.3 * PlayerPrefs.GetFloat("sound_volume", 1.0));
+						if (!Network.isClient && !Network.isServer)
+						{
+							PlayAlertFX(false);
+						}
+						else
+						{
+							this.networkView.RPC("PlayAlertFX", RPCMode.All, false);
+						}
 					}
 					break;
 			}
@@ -650,9 +868,9 @@ function UpdateDrone() {
 
 	audiosource_motor.volume -= Vector3.Distance(GameObject.Find("Main Camera").transform.position, transform.position) * 0.0125 * PlayerPrefs.GetFloat("sound_volume", 1.0);
 
-	var line_of_sight = true;
-	if(Physics.Linecast(transform.position, GameObject.Find("Main Camera").transform.position, hit, 1<<0)){
-		line_of_sight = false;
+	var line_of_sight = false;
+	if(player != null && !Physics.Linecast(transform.position, player.transform.position, hit, 1<<0)){
+		line_of_sight = true;
 	}
 	if(line_of_sight){
 		sound_line_of_sight += Time.deltaTime * 3.0;
@@ -668,29 +886,40 @@ function UpdateDrone() {
 
 
 function Update () {
-	switch(robot_type){
-		case RobotType.STATIONARY_TURRET:
-			UpdateStationaryTurret();
-			break;
-		case RobotType.SHOCK_DRONE:
-			UpdateDrone();
-			break;
+	if (Network.isClient)
+	{
+		UpdateClient();
+	}
+	else
+	{
+		switch(robot_type){
+			case RobotType.STATIONARY_TURRET:
+				UpdateStationaryTurret();
+				break;
+			case RobotType.SHOCK_DRONE:
+				UpdateDrone();
+				break;
+		}
 	}
 }
 
 function OnCollisionEnter(collision : Collision) {
 	if(robot_type == RobotType.SHOCK_DRONE){
-		if(collision.impactForceSum.magnitude > 10){
-			if(Random.Range(0.0,1.0)<0.5 && motor_alive){
-				Damage(transform.FindChild("motor").gameObject);
-			} else if(Random.Range(0.0,1.0)<0.5 && camera_alive){
-				Damage(transform.FindChild("camera_pivot").FindChild("camera").gameObject);
-			} else if(Random.Range(0.0,1.0)<0.5 && battery_alive){
-				Damage(transform.FindChild("battery").gameObject);
-			} else {
-				motor_alive = true;
-				Damage(transform.FindChild("motor").gameObject);
-			} 
+		if(collision.impactForceSum.magnitude > 10)
+		{
+			if (Network.isServer || (!Network.isClient && !Network.isServer))
+			{
+				if(Random.Range(0.0,1.0)<0.5 && motor_alive){
+					Damage(transform.FindChild("motor").gameObject);
+				} else if(Random.Range(0.0,1.0)<0.5 && camera_alive){
+					Damage(transform.FindChild("camera_pivot").FindChild("camera").gameObject);
+				} else if(Random.Range(0.0,1.0)<0.5 && battery_alive){
+					Damage(transform.FindChild("battery").gameObject);
+				} else {
+					motor_alive = true;
+					Damage(transform.FindChild("motor").gameObject);
+				} 
+			}
 		} else {
 			var which_shot = Random.Range(0,sound_bump.length);
 			audiosource_foley.PlayOneShot(sound_bump[which_shot], collision.impactForceSum.magnitude * 0.15 * PlayerPrefs.GetFloat("sound_volume", 1.0));
@@ -699,10 +928,113 @@ function OnCollisionEnter(collision : Collision) {
 }
 
 function FixedUpdate() {
-	if(robot_type == RobotType.SHOCK_DRONE && !distance_sleep){
-		rigidbody.AddForce(transform.rotation * Vector3(0,1,0) * rotor_speed, ForceMode.Force);
-		if(motor_alive){
-			rigidbody.AddTorque(tilt_correction, ForceMode.Force);
+	if (!this.networkView.isMine && (Network.isClient || Network.isServer))
+	{
+	}
+	else
+	{
+		if(robot_type == RobotType.SHOCK_DRONE && !distance_sleep){
+			rigidbody.AddForce(transform.rotation * Vector3(0,1,0) * rotor_speed, ForceMode.Force);
+			if(motor_alive){
+				rigidbody.AddTorque(tilt_correction, ForceMode.Force);
+			}
 		}
 	}
+}
+
+function OnSerializeNetworkView(stream : BitStream, info : NetworkMessageInfo)
+{
+	var syncPosition = Vector3.zero;
+	var syncRotation = Quaternion.identity;
+	var syncVelocity = Vector3.zero;
+	var syncAngularVelocity = Vector3.zero;
+	var gunPosition = Vector3.zero;
+	var gunRotation = Quaternion.identity;
+	var lightColor = Vector4.zero;
+	var lightColor3 = Vector3.zero;
+	var taserPlaying = false;
+    if (stream.isWriting)
+    {
+        syncPosition = rigidbody.position;
+        syncRotation = rigidbody.rotation;
+        syncVelocity = rigidbody.velocity;
+        syncAngularVelocity = rigidbody.angularVelocity;
+        
+        stream.Serialize(syncPosition);
+        stream.Serialize(syncRotation);
+        stream.Serialize(syncVelocity);
+        stream.Serialize(syncAngularVelocity);
+        
+        
+        lightColor = GetLightObject().light.color;
+        lightColor3 = lightColor;
+        stream.Serialize(lightColor3);
+        
+        // sync turret state
+        if (gun_pivot != null)
+        {
+        	gunPosition = gun_pivot.position;
+        	gunRotation = gun_pivot.rotation;
+        	stream.Serialize(gunPosition);
+        	stream.Serialize(gunRotation);
+        }
+        else
+        {
+        	// sync drone state
+        	taserPlaying = audiosource_taser.isPlaying;
+        	stream.Serialize(taserPlaying);
+        }
+    }
+    else
+    {
+        stream.Serialize(syncPosition);
+        stream.Serialize(syncRotation);
+        stream.Serialize(syncVelocity);
+        stream.Serialize(syncAngularVelocity);
+        
+        syncDelta = Mathf.Min(1, Time.time - lastSyncTime);
+        lastSyncTime = Time.time;
+        lastNetPosition = rigidbody.position;
+        lastNetRotation = rigidbody.rotation;
+        netPosition = syncPosition;
+        netRotation = syncRotation;
+        
+        rigidbody.position = syncPosition;
+        rigidbody.rotation = syncRotation;
+        rigidbody.velocity = syncVelocity;
+        rigidbody.angularVelocity = syncAngularVelocity;
+        
+        syncTime = 0;
+        
+        stream.Serialize(lightColor3);
+        lightColor = lightColor3;
+        lightColor.w = 1;
+        GetLightObject().light.color = lightColor;
+        
+        // sync turret state
+        if (gun_pivot != null)
+        {
+        	stream.Serialize(gunPosition);
+        	stream.Serialize(gunRotation);
+        	gun_pivot.position = gunPosition;
+        	gun_pivot.rotation = gunRotation;
+        }
+        else
+        {
+        	// sync drone state
+        	stream.Serialize(taserPlaying);
+        	if (taserPlaying)
+        	{
+        		if (audiosource_taser != null && !audiosource_taser.isPlaying)
+        		{
+					audiosource_taser.volume = PlayerPrefs.GetFloat("sound_volume", 1.0);
+					audiosource_taser.Play();
+				}
+			}
+			else if (audiosource_taser != null && audiosource_taser.isPlaying)
+			{
+				audiosource_taser.Stop();
+			}
+        }
+    }
 }

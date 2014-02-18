@@ -108,7 +108,6 @@ private var extractor_rod_stage = ExtractorRodStage.CLOSED;
 private var extractor_rod_amount = 0.0;
 private var extracted = false;
 private var extractor_rod_rel_pos : Vector3;
-var disable_springs = false;
 
 class CylinderState {
 	var object : GameObject = null;
@@ -153,7 +152,6 @@ function GetHammerCocked() : Transform {
 }
 
 function Start () {
-	disable_springs = false;
 	if(transform.FindChild("slide")){
 		var slide = transform.FindChild("slide");
 		has_slide = true;
@@ -361,12 +359,15 @@ function ApplyPressureToTrigger() : boolean {
 	if(yolk_stage != YolkStage.CLOSED){
 		return;
 	}
+	var playerObj = GameObject.Find("Player");
+	var aimScript = playerObj == null ? null : playerObj.GetComponent(AimScript);
 	if((pressure_on_trigger == PressureState.INITIAL || action_type == ActionType.DOUBLE) && !slide_lock && thumb_on_hammer == Thumb.OFF_HAMMER && hammer_cocked == 1.0 && safety_off == 1.0 && (auto_mod_stage == AutoModStage.ENABLED || !fired_once_this_pull)){
 		trigger_pressed = 1.0;
 		if(gun_type == GunType.AUTOMATIC && slide_amount == 0.0){
 			hammer_cocked = 0.0;
 			if(round_in_chamber && round_in_chamber_state == RoundState.READY){
 				fired_once_this_pull = true;
+				aimScript.OnPullTrigger(true);
 				PlaySoundFromGroup(sound_gunshot_smallroom, 1.0);
 				round_in_chamber_state = RoundState.FIRED;
 				GameObject.Destroy(round_in_chamber);
@@ -388,6 +389,7 @@ function ApplyPressureToTrigger() : boolean {
 				add_head_recoil = true;
 				return true;
 			} else {
+				aimScript.OnPullTrigger(false);
 				PlaySoundFromGroup(sound_mag_eject_button, 0.5);
 			}
 		} else if(gun_type == GunType.REVOLVER){
@@ -398,6 +400,7 @@ function ApplyPressureToTrigger() : boolean {
 			}
 			var round = cylinders[which_chamber].object;
 			if(round && cylinders[which_chamber].can_fire){
+				aimScript.OnPullTrigger(true);
 				PlaySoundFromGroup(sound_gunshot_smallroom, 1.0);
 				round_in_chamber_state = RoundState.FIRED;
 				cylinders[which_chamber].can_fire = false;
@@ -418,6 +421,7 @@ function ApplyPressureToTrigger() : boolean {
 				add_head_recoil = true;
 				return true;
 			} else {
+				aimScript.OnPullTrigger(false);
 				PlaySoundFromGroup(sound_mag_eject_button, 0.5);
 			}
 		}
@@ -800,13 +804,9 @@ function Update () {
 		if(magazine_instance_in_gun){
 			var mag_pos = transform.FindChild("point_mag_inserted").position;
 			var mag_rot = transform.rotation;
-			var mag_seated_display = mag_seated;
-			if(disable_springs){
-				mag_seated_display = Mathf.Floor(mag_seated_display + 0.5);
-			}
 			mag_pos += (transform.FindChild("point_mag_to_insert").position - 
 					    transform.FindChild("point_mag_inserted").position) * 
-					   (1.0 - mag_seated_display);
+					   (1.0 - mag_seated);
 		   magazine_instance_in_gun.transform.position = mag_pos;
 		   magazine_instance_in_gun.transform.rotation = mag_rot;
 		}
@@ -885,51 +885,32 @@ function Update () {
 			}
 		}	
 		
-		var slide_amount_display = slide_amount;
-		if(disable_springs){
-			slide_amount_display = Mathf.Floor(slide_amount_display + 0.5);
-			if(slide_amount == kPressCheckPosition){
-				slide_amount_display = kPressCheckPosition;
-			}
-		}
 		transform.FindChild("slide").localPosition = 
 			slide_rel_pos + 
 			(transform.FindChild("point_slide_end").localPosition - 
-			 transform.FindChild("point_slide_start").localPosition) * slide_amount_display;
+			 transform.FindChild("point_slide_start").localPosition) * slide_amount;
 	}
 	
 	if(has_hammer){
 		var hammer = GetHammer();
 		var point_hammer_cocked = transform.FindChild("point_hammer_cocked");
-		var hammer_cocked_display = hammer_cocked;
-		if(disable_springs){
-			hammer_cocked_display = Mathf.Floor(hammer_cocked_display + 0.5);
-		}
 		hammer.localPosition = 
-			Vector3.Lerp(hammer_rel_pos, point_hammer_cocked.localPosition, hammer_cocked_display);
+			Vector3.Lerp(hammer_rel_pos, point_hammer_cocked.localPosition, hammer_cocked);
 		hammer.localRotation = 
-			Quaternion.Slerp(hammer_rel_rot, point_hammer_cocked.localRotation, hammer_cocked_display);
+			Quaternion.Slerp(hammer_rel_rot, point_hammer_cocked.localRotation, hammer_cocked);
 	}
 		
 	if(has_safety){
-		var safety_off_display = safety_off;
-		if(disable_springs){
-			safety_off_display = Mathf.Floor(safety_off_display + 0.5);
-		}
 		transform.FindChild("safety").localPosition = 
-			Vector3.Lerp(safety_rel_pos, transform.FindChild("point_safety_off").localPosition, safety_off_display);
+			Vector3.Lerp(safety_rel_pos, transform.FindChild("point_safety_off").localPosition, safety_off);
 		transform.FindChild("safety").localRotation = 
-			Quaternion.Slerp(safety_rel_rot, transform.FindChild("point_safety_off").localRotation, safety_off_display);
+			Quaternion.Slerp(safety_rel_rot, transform.FindChild("point_safety_off").localRotation, safety_off);
 	}
 	
 	if(has_auto_mod){
-		var auto_mod_amount_display = auto_mod_amount;
-		if(disable_springs){
-			auto_mod_amount_display = Mathf.Floor(auto_mod_amount_display + 0.5);
-		}
 		var slide = transform.FindChild("slide");
 		slide.FindChild("auto mod toggle").localPosition = 
-			Vector3.Lerp(auto_mod_rel_pos, slide.FindChild("point_auto_mod_enabled").localPosition, auto_mod_amount_display);
+			Vector3.Lerp(auto_mod_rel_pos, slide.FindChild("point_auto_mod_enabled").localPosition, auto_mod_amount);
 	}
 			
 	if(gun_type == GunType.AUTOMATIC){
@@ -1061,23 +1042,17 @@ function Update () {
 			extractor_rod_stage = ExtractorRodStage.CLOSING;
 		}
 			
-		var yolk_open_display = yolk_open;
-		var extractor_rod_amount_display = extractor_rod_amount;
-		if(disable_springs){
-			yolk_open_display = Mathf.Floor(yolk_open_display + 0.5);
-			extractor_rod_amount_display = Mathf.Floor(extractor_rod_amount_display + 0.5);
-		}
 		var yolk_pivot = transform.FindChild("yolk_pivot");
 		yolk_pivot.localRotation = Quaternion.Slerp(yolk_pivot_rel_rot, 
 			transform.FindChild("point_yolk_pivot_open").localRotation,
-			yolk_open_display);
+			yolk_open);
 		var cylinder_assembly = yolk_pivot.FindChild("yolk").FindChild("cylinder_assembly");
 		cylinder_assembly.localRotation.eulerAngles.z = cylinder_rotation;	
 		var extractor_rod = cylinder_assembly.FindChild("extractor_rod");
 		extractor_rod.localPosition = Vector3.Lerp(
 			extractor_rod_rel_pos, 
 			cylinder_assembly.FindChild("point_extractor_rod_extended").localPosition,
-		    extractor_rod_amount_display);	
+		    extractor_rod_amount);	
 	
 		for(i=0; i<cylinder_capacity; ++i){
 			if(cylinders[i].object){

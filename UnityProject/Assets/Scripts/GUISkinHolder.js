@@ -12,10 +12,12 @@ var weapons : GameObject[];
 var weapon : GameObject;
 var flashlight_object : GameObject;
 var has_flashlight = false;
+var weaponIndex : int = 0;
 
 function Awake () {
 	//weapon = weapons[2];
-	weapon = weapons[Random.Range(0,weapons.length)];
+	weaponIndex = Random.Range(0,weapons.length);
+	weapon = weapons[weaponIndex];
 }
 
 function Start () {

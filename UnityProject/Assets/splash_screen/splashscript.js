@@ -60,25 +60,11 @@ function OnGUI(){
 	GUI.DrawTexture(Rect(Screen.width*(1-scale)*0.5,Screen.height*(1-scale)*0.5,Screen.width*scale,Screen.height*scale), splash_back, ScaleMode.ScaleAndCrop, true);
 	GUI.DrawTexture(Rect(Screen.width*0.125, Screen.height * 0.3 - splash_text.height*0.5, Screen.width*0.75,splash_text.height), splash_text, ScaleMode.ScaleToFit, true);
 	GUI.color.a *= (fade_in-1.6)*4.0;
-	GUI.DrawTexture(Rect(Screen.width*0.5 - splash_play.width, 
+	/*GUI.DrawTexture(Rect(Screen.width*0.5 - splash_play.width, 
 						 Screen.height * 0.7 - splash_play.height*0.5, 
 						 splash_play.width*2.0,
 						 splash_play.height),
-				    splash_play, ScaleMode.ScaleToFit, true);
+				    splash_play, ScaleMode.ScaleToFit, true);*/
 	GUI.color = Color(color.r, color.g, color.b, 0.35 * (fade_in-3.6)*4.0);
 	GUI.DrawTexture(Rect(Screen.width*0.125, Screen.height * 0.9 - splash_credits.height*0.5, Screen.width*0.75,splash_credits.height), splash_credits, ScaleMode.ScaleToFit, true);
-	
-	if(state != SplashState.FADE_OUT){
-	    if (Event.current.type == EventType.KeyDown ||
-	        Event.current.type == EventType.MouseDown)
-	    {
-	        state = SplashState.FADE_OUT;
-   			audiosource_effect.PlayOneShot(stop_sound, PlayerPrefs.GetFloat("sound_volume", 1.0));
-	        audiosource_music_a.Stop();
-	        audiosource_music_b.Stop();
-	    }
-    }
-    if(fade_out_delay >= 0.2){
-		Application.LoadLevel("scene");
-	}	
 }

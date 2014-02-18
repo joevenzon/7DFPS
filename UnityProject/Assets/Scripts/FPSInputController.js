@@ -11,6 +11,8 @@ function Awake () {
 
 // Update is called once per frame
 function Update () {
+	if (!this.networkView.isMine && (Network.isClient || Network.isServer)) return;
+
 	// Get the input vector from kayboard or analog stick
 	var directionVector = new Vector3(Input.GetAxis("Horizontal"), 0, Input.GetAxis("Vertical"));
 	

@@ -351,6 +351,8 @@ private function UpdateFunction () {
 }
 
 function FixedUpdate () {
+	if (!this.networkView.isMine) return;
+
 	if (movingPlatform.enabled) {
 		if (movingPlatform.activePlatform != null) {
 			if (!movingPlatform.newPlatform) {
@@ -389,6 +391,8 @@ function FixedUpdate () {
 }
 
 function Update () {
+	if (!this.networkView.isMine) return;
+	
 	if(PlayerPrefs.GetInt("toggle_crouch", 1)==1){
 		if(!GetComponent(AimScript).IsDead() && Input.GetButtonDown("Crouch Toggle")){
 			crouching = !crouching;
@@ -580,6 +584,8 @@ private function ApplyGravityAndJumping (velocity : Vector3) {
 }
 
 function OnControllerColliderHit (hit : ControllerColliderHit) {
+	if (!this.networkView.isMine) return;
+
 	if (hit.normal.y > 0 && hit.normal.y > groundNormal.y && hit.moveDirection.y < 0) {
 		if ((hit.point - movement.lastHitPoint).sqrMagnitude > 0.001 || lastGroundNormal == Vector3.zero)
 			groundNormal = hit.normal;

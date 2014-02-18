@@ -30,8 +30,20 @@ function HandleEvent(event : MusicEvent){
 	}
 }
 
+@RPC
+function AddDangerLevelInternal(val : float)
+{
+	if (this.networkView.isMine || (!Network.isClient && !Network.isServer)) 
+	{
+		danger_level_accumulate += val;
+	}
+}
+
 function AddDangerLevel(val : float) {
-	danger_level_accumulate += val;
+	if (this.networkView.isMine || (!Network.isClient && !Network.isServer))
+	{
+		AddDangerLevelInternal(val);
+	}
 }
 
 function SetMystical(val : float) {

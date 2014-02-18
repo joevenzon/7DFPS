@@ -14,7 +14,6 @@ var life_time = 0.0;
 enum MagLoadStage {NONE, PUSHING_DOWN, ADDING_ROUND, REMOVING_ROUND, PUSHING_UP};
 var mag_load_stage = MagLoadStage.NONE;
 var mag_load_progress = 0.0;
-var disable_interp = true;
 
 function RemoveRound() : boolean {
 	if(num_rounds == 0){
@@ -146,33 +145,29 @@ function Update() {
 			}
 			break;
 	}
-	var mag_load_progress_display = mag_load_progress;
-	if(disable_interp){
-		mag_load_progress_display = Mathf.Floor(mag_load_progress + 0.5);
-	}
 	switch(mag_load_stage){
 		case MagLoadStage.PUSHING_DOWN:
 			obj = transform.FindChild("round_1");
 			obj.localPosition = Vector3.Lerp(transform.FindChild("point_start_load").localPosition, 
 											 transform.FindChild("point_load").localPosition, 
-											 mag_load_progress_display);
+											 mag_load_progress);
 			obj.localRotation = Quaternion.Slerp(transform.FindChild("point_start_load").localRotation, 
 												 transform.FindChild("point_load").localRotation, 
-												 mag_load_progress_display);
+												 mag_load_progress);
 			for(i=1; i<num_rounds; ++i){
 				obj = transform.FindChild("round_"+(i+1));
-				obj.localPosition = Vector3.Lerp(round_pos[i-1], round_pos[i], mag_load_progress_display);
-				obj.localRotation = Quaternion.Slerp(round_rot[i-1], round_rot[i], mag_load_progress_display);
+				obj.localPosition = Vector3.Lerp(round_pos[i-1], round_pos[i], mag_load_progress);
+				obj.localRotation = Quaternion.Slerp(round_rot[i-1], round_rot[i], mag_load_progress);
 			}
 			break;
 		case MagLoadStage.ADDING_ROUND:
 			obj = transform.FindChild("round_1");
 			obj.localPosition = Vector3.Lerp(transform.FindChild("point_load").localPosition, 
 											 round_pos[0], 
-											 mag_load_progress_display);
+											 mag_load_progress);
 			obj.localRotation = Quaternion.Slerp(transform.FindChild("point_load").localRotation, 
 												 round_rot[0], 
-												 mag_load_progress_display);
+												 mag_load_progress);
 			for(i=1; i<num_rounds; ++i){
 				obj = transform.FindChild("round_"+(i+1));
 				obj.localPosition = round_pos[i];
@@ -182,24 +177,24 @@ function Update() {
 			obj = transform.FindChild("round_1");
 			obj.localPosition = Vector3.Lerp(transform.FindChild("point_start_load").localPosition, 
 											 transform.FindChild("point_load").localPosition, 
-											 1.0-mag_load_progress_display);
+											 1.0-mag_load_progress);
 			obj.localRotation = Quaternion.Slerp(transform.FindChild("point_start_load").localRotation, 
 												 transform.FindChild("point_load").localRotation, 
-												 1.0-mag_load_progress_display);
+												 1.0-mag_load_progress);
 			for(i=1; i<num_rounds; ++i){
 				obj = transform.FindChild("round_"+(i+1));
-				obj.localPosition = Vector3.Lerp(round_pos[i-1], round_pos[i], mag_load_progress_display);
-				obj.localRotation = Quaternion.Slerp(round_rot[i-1], round_rot[i], mag_load_progress_display);
+				obj.localPosition = Vector3.Lerp(round_pos[i-1], round_pos[i], mag_load_progress);
+				obj.localRotation = Quaternion.Slerp(round_rot[i-1], round_rot[i], mag_load_progress);
 			}
 			break;
 		case MagLoadStage.REMOVING_ROUND:
 			obj = transform.FindChild("round_1");
 			obj.localPosition = Vector3.Lerp(transform.FindChild("point_load").localPosition, 
 											 round_pos[0], 
-											 1.0-mag_load_progress_display);
+											 1.0-mag_load_progress);
 			obj.localRotation = Quaternion.Slerp(transform.FindChild("point_load").localRotation, 
 												 round_rot[0], 
-												 1.0-mag_load_progress_display);
+												 1.0-mag_load_progress);
 			for(i=1; i<num_rounds; ++i){
 				obj = transform.FindChild("round_"+(i+1));
 				obj.localPosition = round_pos[i];

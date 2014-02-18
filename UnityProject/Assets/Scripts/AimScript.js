@@ -38,9 +38,6 @@ private var max_angle_y = 89.0;
 private var holder : GUISkinHolder;
 private var weapon_holder : WeaponHolder;
 
-var disable_springs = false; 
-var disable_recoil = true;
-
 // Private variables
 
 public class Spring {
@@ -48,9 +45,9 @@ public class Spring {
 	var target_state : float;
 	var vel : float;
 	var strength : float;
-	var damping : float; 
+	var damping : float;
 	public function Spring(state : float, target_state : float, strength : float, damping : float){
-		this.Set(state, target_state, strength, damping); 
+		this.Set(state, target_state, strength, damping);
 	}
 	public function Set(state : float, target_state : float, strength : float, damping : float){
 		this.state = state;
@@ -59,15 +56,10 @@ public class Spring {
 		this.damping = damping;
 		this.vel = 0.0;		
 	}
-	public function Update() {  
-		var linear_springs = true;
-		if(linear_springs){
-			this.state = Mathf.MoveTowards(this.state, this.target_state, this.strength * Time.deltaTime * 0.05);
-		} else {	 
-			this.vel += (this.target_state - this.state) * this.strength * Time.deltaTime;
-			this.vel *= Mathf.Pow(this.damping, Time.deltaTime);
-			this.state += this.vel * Time.deltaTime;
-		}
+	public function Update() {
+		this.vel += (this.target_state - this.state) * this.strength * Time.deltaTime;
+		this.vel *= Mathf.Pow(this.damping, Time.deltaTime);
+		this.state += this.vel * Time.deltaTime;	
 	}
 };
 
@@ -185,6 +177,9 @@ private var dying = false;
 private var dead = false;
 private var won = false;
 
+private var spawn_position : Vector3 = Vector3(0,0,0);
+private var spawn_rotation : Quaternion = Quaternion.identity;
+
 function IsAiming() : boolean {
 	return (gun_instance != null && aim_spring.target_state == 1.0);
 }
@@ -198,7 +193,11 @@ function StepRecoil(amount : float) {
 	y_recoil_spring.vel += Random.Range(-200,200) * amount;
 }
 
-function WasShot(){
+@RPC
+function WasShotInternal()
+{
+	if (!this.networkView.isMine && (Network.isClient || Network.isServer)) return;
+	
 	head_recoil_spring_x.vel += Random.Range(-400,400);
 	head_recoil_spring_y.vel += Random.Range(-400,400);
 	x_recoil_spring.vel += Random.Range(-400,400);
@@ -216,6 +215,20 @@ function WasShot(){
 	}
 }
 
+function WasShot(){
+	// this function is called by bullets when they hit a player
+	// bullets for players are always local authoritative
+	// bullets for AI are always server authoritative
+	// this scheme works because bullets are never created/synced remotely
+	
+	// when a player is shot by a bullet, process the message locally
+	// or notify the remote player about it
+	if ((!Network.isClient && !Network.isServer) || this.networkView.isMine)
+		WasShotInternal();
+	else
+		this.networkView.RPC("WasShotInternal", RPCMode.Others);
+}
+
 function FallDeath(vel : Vector3) {
 	if(!god_mode && !won){
 		SetDead(true);
@@ -231,10 +244,13 @@ function InstaKill() {
 	dead_fade = 1.0;
 }
 
+@RPC
 function Shock() {
+	if (!this.networkView.isMine && (Network.isClient || Network.isServer)) return;
+	
 	if(!god_mode && !won){
 		if(!dead){
-			PlaySoundFromGroup(sound_electrocute, 1.0);
+			PlaySoundFromGroup(audio, sound_electrocute, 1.0);
 		}
 		SetDead(true);
 	}
@@ -264,9 +280,9 @@ function SetDead(new_dead : boolean) {
 	}
 }
 
-function PlaySoundFromGroup(group : Array, volume : float){
+function PlaySoundFromGroup(audiosource : AudioSource, group : Array, volume : float){
 	var which_shot = Random.Range(0,group.length);
-	audio.PlayOneShot(group[which_shot], volume * PlayerPrefs.GetFloat("sound_volume", 1.0));
+	audiosource.PlayOneShot(group[which_shot], volume * PlayerPrefs.GetFloat("sound_volume", 1.0));
 }
 
 function AddLooseBullet(spring:boolean) {
@@ -279,10 +295,40 @@ function AddLooseBullet(spring:boolean) {
 	}
 }
 
-function Start() { 
-	disable_springs = false; 
-	disable_recoil = true;
+@RPC
+function PlayFireFX(weaponIndex : int, ignition : boolean)
+{
+	var remoteWeapon = holder.weapons[weaponIndex];
+	var remoteHolder = remoteWeapon.GetComponent(WeaponHolder);
+	var remoteGunObj = remoteHolder.gun_object;
+	var remoteGunscript = remoteGunObj.GetComponent(GunScript);
+	if (ignition)
+	{
+		PlaySoundFromGroup(audio, remoteGunscript.sound_gunshot_smallroom, 1.0);
+	}
+	else
+	{
+		PlaySoundFromGroup(audio, remoteGunscript.sound_mag_eject_button, 0.5);
+	}
+}
+
+function OnPullTrigger(ignition : boolean)
+{
+	if (Network.isClient || Network.isServer)
+		this.networkView.RPC("PlayFireFX", RPCMode.Others, holder.weaponIndex, ignition);
+}
+
+function Start() {
 	holder = GameObject.Find("gui_skin_holder").GetComponent(GUISkinHolder);
+	
+	if (!this.networkView.isMine && (Network.isClient || Network.isServer))
+	{
+		return;
+	}
+	
+	spawn_position = transform.position;
+	spawn_rotation = transform.rotation;
+	
 	weapon_holder = holder.weapon.GetComponent(WeaponHolder);
 	magazine_obj = weapon_holder.mag_object;
 	gun_obj = weapon_holder.gun_object;
@@ -791,7 +837,7 @@ function HandleControls() {
 		if(Input.GetButtonDown("Pull Back Slide")){
 			if(magazine_instance_in_hand.GetComponent(mag_script).RemoveRoundAnimated()){
 				AddLooseBullet(true);
-				PlaySoundFromGroup(sound_bullet_grab, 0.2);
+				PlaySoundFromGroup(audio, sound_bullet_grab, 0.2);
 			}
 		}
 	}
@@ -799,7 +845,7 @@ function HandleControls() {
 	if(Input.GetButtonDown("Aim Toggle")){
 		aim_toggle = !aim_toggle;
 	}
-	if(Input.GetButtonDown("Slow Motion Toggle") && slomo_mode){
+	if(Input.GetButtonDown("Slow Motion Toggle") && slomo_mode && !Network.isClient && !Network.isServer){
 		if(Time.timeScale == 1.0){
 			Time.timeScale = 0.1;
 		} else {
@@ -869,7 +915,7 @@ function UpdateCheats() {
 	} else if(iddqd_progress == 4 && Input.GetKeyDown('d')){
 		iddqd_progress = 0;
 		god_mode = !god_mode; 
-		PlaySoundFromGroup(holder.sound_scream, 1.0);
+		PlaySoundFromGroup(audio, holder.sound_scream, 1.0);
 	}
 	if(idkfa_progress == 0 && Input.GetKeyDown('i')){
 		++idkfa_progress; cheat_delay = 1.0;
@@ -882,12 +928,12 @@ function UpdateCheats() {
 	} else if(idkfa_progress == 4 && Input.GetKeyDown('a')){
 		idkfa_progress = 0;
 		if(loose_bullets.length < 30){
-			PlaySoundFromGroup(sound_bullet_grab, 0.2);
+			PlaySoundFromGroup(audio, sound_bullet_grab, 0.2);
 		}
 		while(loose_bullets.length < 30){
 			AddLooseBullet(true);
 		}
-		PlaySoundFromGroup(holder.sound_scream, 1.0);
+		PlaySoundFromGroup(audio, holder.sound_scream, 1.0);
 	}
 	if(slomo_progress == 0 && Input.GetKeyDown('s')){
 		++slomo_progress; cheat_delay = 1.0;
@@ -905,7 +951,7 @@ function UpdateCheats() {
 		} else {
 			Time.timeScale = 1.0;
 		}
-		PlaySoundFromGroup(holder.sound_scream, 1.0);
+		PlaySoundFromGroup(audio, holder.sound_scream, 1.0);
 	}
 	if(cheat_delay > 0.0){
 		cheat_delay -= Time.deltaTime;
@@ -1005,7 +1051,7 @@ function UpdateLevelResetButton() {
 		dead_volume_fade = Mathf.Min(1.0-level_reset_hold * 0.5, dead_volume_fade);
 		dead_fade = level_reset_hold * 0.5;
 		if(level_reset_hold >= 2.0){
-			Application.LoadLevel(Application.loadedLevel);
+			Respawn();
 			level_reset_hold = 0.0;
 		}
 	} else {
@@ -1034,7 +1080,7 @@ function UpdateLevelEndEffects() {
 				head_tilt_x_vel = 0.0;
 				head_tilt_y_vel = 0.0;
 				if(!dead_body_fell){
-					PlaySoundFromGroup(sound_body_fall, 1.0);
+					PlaySoundFromGroup(audio, sound_body_fall, 1.0);
 					dead_body_fell = true;
 				}
 			}
@@ -1049,7 +1095,7 @@ function UpdateLevelEndEffects() {
 
 function UpdateLevelChange() {
 	if((dead && dead_volume_fade <= 0.0)){ 
-		Application.LoadLevel(Application.loadedLevel);
+		Respawn();
 	}
 	if(won && dead_volume_fade <= 0.0){ 
 		Application.LoadLevel("winscene");
@@ -1124,9 +1170,7 @@ function UpdateCameraRotationControls() {
 
 function UpdateCameraAndPlayerTransformation() {
 	main_camera.transform.localEulerAngles = Vector3(-view_rotation_y, view_rotation_x, head_tilt);
-	if(!disable_recoil){
-		main_camera.transform.localEulerAngles += Vector3(head_recoil_spring_y.state, head_recoil_spring_x.state, 0); 
-	}
+	main_camera.transform.localEulerAngles += Vector3(head_recoil_spring_y.state, head_recoil_spring_x.state, 0);
 	character_controller.transform.localEulerAngles.y = view_rotation_x;
 	main_camera.transform.position = transform.position;
 	main_camera.transform.position.y += character_controller.height * character_controller.transform.localScale.y - 0.1;
@@ -1139,42 +1183,26 @@ function UpdateGunTransformation() {
 	
 	var unaimed_dir = (transform.forward + Vector3(0,-1,0)).normalized;
 	var unaimed_pos = main_camera.transform.position + unaimed_dir*GunDist();
-	 
-	if(disable_springs){ 
-		gun_instance.transform.position = mix(unaimed_pos, aim_pos, aim_spring.target_state);
-		gun_instance.transform.forward = mix(unaimed_dir, aim_dir, aim_spring.target_state);
-	} else { 
-		gun_instance.transform.position = mix(unaimed_pos, aim_pos, aim_spring.state);
-		gun_instance.transform.forward = mix(unaimed_dir, aim_dir, aim_spring.state);
-  	}
-  	
-	if(disable_springs) {
-		ApplyPose("pose_slide_pull", slide_pose_spring.target_state);
-		ApplyPose("pose_reload", reload_pose_spring.target_state);
-		ApplyPose("pose_press_check", press_check_pose_spring.target_state);
-		ApplyPose("pose_inspect_cylinder", inspect_cylinder_pose_spring.target_state);
-		ApplyPose("pose_add_rounds", add_rounds_pose_spring.target_state);
-		ApplyPose("pose_eject_rounds", eject_rounds_pose_spring.target_state); 
-	} else {
-		ApplyPose("pose_slide_pull", slide_pose_spring.state);
-		ApplyPose("pose_reload", reload_pose_spring.state);
-		ApplyPose("pose_press_check", press_check_pose_spring.state);
-		ApplyPose("pose_inspect_cylinder", inspect_cylinder_pose_spring.state);
-		ApplyPose("pose_add_rounds", add_rounds_pose_spring.state);
-		ApplyPose("pose_eject_rounds", eject_rounds_pose_spring.state); 
-	}
 	
-	if(!disable_recoil){		
-		gun_instance.transform.RotateAround(
-			gun_instance.transform.FindChild("point_recoil_rotate").position,
-			gun_instance.transform.rotation * Vector3(1,0,0),
-			x_recoil_spring.state);
-			
-		gun_instance.transform.RotateAround(
-			gun_instance.transform.FindChild("point_recoil_rotate").position,
-			Vector3(0,1,0),
-			y_recoil_spring.state); 
-	}
+	gun_instance.transform.position = mix(unaimed_pos, aim_pos, aim_spring.state);
+	gun_instance.transform.forward = mix(unaimed_dir, aim_dir, aim_spring.state);
+	
+	ApplyPose("pose_slide_pull", slide_pose_spring.state);
+	ApplyPose("pose_reload", reload_pose_spring.state);
+	ApplyPose("pose_press_check", press_check_pose_spring.state);
+	ApplyPose("pose_inspect_cylinder", inspect_cylinder_pose_spring.state);
+	ApplyPose("pose_add_rounds", add_rounds_pose_spring.state);
+	ApplyPose("pose_eject_rounds", eject_rounds_pose_spring.state);
+		
+	gun_instance.transform.RotateAround(
+		gun_instance.transform.FindChild("point_recoil_rotate").position,
+		gun_instance.transform.rotation * Vector3(1,0,0),
+		x_recoil_spring.state);
+		
+	gun_instance.transform.RotateAround(
+		gun_instance.transform.FindChild("point_recoil_rotate").position,
+		Vector3(0,1,0),
+		y_recoil_spring.state);
 }
 
 function UpdateFlashlightTransformation() {
@@ -1208,15 +1236,10 @@ function UpdateFlashlightTransformation() {
 		flashlight_aim_pos = Quaternion.Inverse(main_camera.transform.rotation) * flashlight_aim_pos;
 		flashlight_aim_rot = Quaternion.Inverse(main_camera.transform.rotation) * flashlight_aim_rot;
 	}
+		
+	flashlight_pos = mix(flashlight_pos, main_camera.transform.rotation * flashlight_aim_pos + main_camera.transform.position, aim_spring.state);
+	flashlight_rot = mix(flashlight_rot, main_camera.transform.rotation * flashlight_aim_rot, aim_spring.state);
 	
-	if(disable_springs){
-		flashlight_pos = mix(flashlight_pos, main_camera.transform.rotation * flashlight_aim_pos + main_camera.transform.position, aim_spring.target_state);
-		flashlight_rot = mix(flashlight_rot, main_camera.transform.rotation * flashlight_aim_rot, aim_spring.target_state);
-	} else {
-		flashlight_pos = mix(flashlight_pos, main_camera.transform.rotation * flashlight_aim_pos + main_camera.transform.position, aim_spring.state);
-		flashlight_rot = mix(flashlight_rot, main_camera.transform.rotation * flashlight_aim_rot, aim_spring.state);
-	} 
-	 
 	var flashlight_mouth_pos = main_camera.transform.position + main_camera.transform.rotation*Vector3(0.0,-0.08,0.05);
 	var flashlight_mouth_rot = main_camera.transform.rotation;
 	
@@ -1228,20 +1251,12 @@ function UpdateFlashlightTransformation() {
 		(inspect_cylinder_pose_spring.state + eject_rounds_pose_spring.state + (press_check_pose_spring.state/0.6) + (reload_pose_spring.state/0.7) + slide_pose_spring.state) * aim_spring.state);
 	
 	flashlight_mouth_spring.Update();
-	 
-	if(disable_springs){
-		flashlight_pos = mix(flashlight_pos, flashlight_mouth_pos, flashlight_mouth_spring.target_state);
-		flashlight_rot = mix(flashlight_rot, flashlight_mouth_rot, flashlight_mouth_spring.target_state);
-		
-		flashlight_pos = mix(flashlight_pos, flash_ground_pos, flash_ground_pose_spring.target_state);
-	   	flashlight_rot = mix(flashlight_rot, flash_ground_rot, flash_ground_pose_spring.target_state);
-	} else {
-		flashlight_pos = mix(flashlight_pos, flashlight_mouth_pos, flashlight_mouth_spring.state);
-		flashlight_rot = mix(flashlight_rot, flashlight_mouth_rot, flashlight_mouth_spring.state);
-		
-		flashlight_pos = mix(flashlight_pos, flash_ground_pos, flash_ground_pose_spring.state);
-	   	flashlight_rot = mix(flashlight_rot, flash_ground_rot, flash_ground_pose_spring.state);
-	}
+	
+	flashlight_pos = mix(flashlight_pos, flashlight_mouth_pos, flashlight_mouth_spring.state);
+	flashlight_rot = mix(flashlight_rot, flashlight_mouth_rot, flashlight_mouth_spring.state);
+	
+	flashlight_pos = mix(flashlight_pos, flash_ground_pos, flash_ground_pose_spring.state);
+   	flashlight_rot = mix(flashlight_rot, flash_ground_rot, flash_ground_pose_spring.state);
    		
 	held_flashlight.transform.position = flashlight_pos;
 	held_flashlight.transform.rotation = flashlight_rot;
@@ -1258,20 +1273,11 @@ function UpdateMagazineTransformation() {
    		var mag_script = magazine_instance_in_hand.GetComponent(mag_script);
    		var hold_pos = main_camera.transform.position + main_camera.transform.rotation*mag_script.hold_offset;
 		var hold_rot = main_camera.transform.rotation * Quaternion.AngleAxis(mag_script.hold_rotation.x, Vector3(0,1,0)) * Quaternion.AngleAxis(mag_script.hold_rotation.y, Vector3(1,0,0));
-   		if(disable_springs){ 
-			hold_pos = mix(hold_pos, mag_ground_pos, mag_ground_pose_spring.target_state);
-	   		hold_rot = mix(hold_rot, mag_ground_rot, mag_ground_pose_spring.target_state);
-		} else {
-			hold_pos = mix(hold_pos, mag_ground_pos, mag_ground_pose_spring.state);
-	   		hold_rot = mix(hold_rot, mag_ground_rot, mag_ground_pose_spring.state);
-   		}
+   		hold_pos = mix(hold_pos, mag_ground_pos, mag_ground_pose_spring.state);
+   		hold_rot = mix(hold_rot, mag_ground_rot, mag_ground_pose_spring.state);
    		if(hold_pose_spring.state != 1.0){ 
-   			var amount = hold_pose_spring.state;
-   			if(disable_springs){ 
-   				amount = hold_pose_spring.target_state;
-   			}
-	   		magazine_instance_in_hand.transform.position = mix(mag_pos, hold_pos, amount);
-			magazine_instance_in_hand.transform.rotation = mix(mag_rot, hold_rot, amount);
+	   		magazine_instance_in_hand.transform.position = mix(mag_pos, hold_pos, hold_pose_spring.state);
+			magazine_instance_in_hand.transform.rotation = mix(mag_rot, hold_rot, hold_pose_spring.state);
 		} else {
 	   		magazine_instance_in_hand.transform.position = hold_pos;
 			magazine_instance_in_hand.transform.rotation = hold_rot;
@@ -1279,7 +1285,7 @@ function UpdateMagazineTransformation() {
 	} else {
 		magazine_instance_in_hand.transform.position = mag_pos;
 		magazine_instance_in_hand.transform.rotation = mag_rot;
-	} 
+	}
 }
 
 function UpdateInventoryTransformation() {
@@ -1305,35 +1311,19 @@ function UpdateInventoryTransformation() {
 				slot.type = WeaponSlotType.EMPTY;
 				slot.spring.state = 0.0;
 			}
-		} 
-		var scale = 0.0;
-		if(disable_springs){  
-			slot.obj.transform.position = mix(
-				start_pos, 
-				main_camera.transform.position + main_camera.camera.ScreenPointToRay(Vector3(main_camera.camera.pixelWidth * (0.05 + i*0.15), main_camera.camera.pixelHeight * 0.17,0)).direction * 0.3, 
-				slot.spring.target_state);
-			scale = 0.3 * slot.spring.target_state + (1.0 - slot.spring.target_state);
-			slot.obj.transform.localScale.x *= scale;
-			slot.obj.transform.localScale.y *= scale;
-			slot.obj.transform.localScale.z *= scale; 
-			slot.obj.transform.rotation = mix(
-				start_rot, 
-				main_camera.transform.rotation * Quaternion.AngleAxis(90, Vector3(0,1,0)), 
-				slot.spring.target_state);
-		} else {  
-			slot.obj.transform.position = mix(
-				start_pos, 
-				main_camera.transform.position + main_camera.camera.ScreenPointToRay(Vector3(main_camera.camera.pixelWidth * (0.05 + i*0.15), main_camera.camera.pixelHeight * 0.17,0)).direction * 0.3, 
-				slot.spring.state);
-			scale = 0.3 * slot.spring.state + (1.0 - slot.spring.state);
-			slot.obj.transform.localScale.x *= scale;
-			slot.obj.transform.localScale.y *= scale;
-			slot.obj.transform.localScale.z *= scale; 
-			slot.obj.transform.rotation = mix(
-				start_rot, 
-				main_camera.transform.rotation * Quaternion.AngleAxis(90, Vector3(0,1,0)), 
-				slot.spring.state);
 		}
+		slot.obj.transform.position = mix(
+			start_pos, 
+			main_camera.transform.position + main_camera.camera.ScreenPointToRay(Vector3(main_camera.camera.pixelWidth * (0.05 + i*0.15), main_camera.camera.pixelHeight * 0.17,0)).direction * 0.3, 
+			slot.spring.state);
+		var scale = 0.3 * slot.spring.state + (1.0 - slot.spring.state);
+		slot.obj.transform.localScale.x *= scale;
+		slot.obj.transform.localScale.y *= scale;
+		slot.obj.transform.localScale.z *= scale;
+		slot.obj.transform.rotation = mix(
+			start_rot, 
+			main_camera.transform.rotation * Quaternion.AngleAxis(90, Vector3(0,1,0)), 
+			slot.spring.state);
 		var renderers = slot.obj.GetComponentsInChildren(Renderer);
 		for(var renderer : Renderer in renderers){
 			renderer.castShadows = false; 
@@ -1405,7 +1395,7 @@ function UpdatePickupMagnet() {
 			} else {
 				AddLooseBullet(true);
 				collected_rounds.splice(i,1);
-				PlaySoundFromGroup(sound_bullet_grab, 0.2);
+				PlaySoundFromGroup(audio, sound_bullet_grab, 0.2);
 			}
 			GameObject.Destroy(round);
 		}
@@ -1414,6 +1404,8 @@ function UpdatePickupMagnet() {
 }
 
 function Update() {
+	if (!this.networkView.isMine && (Network.isClient || Network.isServer)) return;
+	
 	UpdateTape();
 	UpdateCheats();
 	UpdateFallOffMapDeath();
@@ -1532,12 +1524,18 @@ function GetFlashlightSlot() : int {
 }
 
 function OnGUI() {
+	if (!this.networkView.isMine && (Network.isClient || Network.isServer)) return;
+	
 	var display_text = new Array();
 	var gun_script : GunScript = null;
 	if(gun_instance){
 		gun_script = gun_instance.GetComponent(GunScript);
 	}
 	display_text.push(new DisplayLine(tapes_heard.length + " tapes absorbed out of "+total_tapes.length, true));
+	var sector : int = transform.position.z / 20.0 + 0.5;
+	var sectorName = (sector >= 0) ? "Blue " : "Red ";
+	if (sector == 0) sectorName = "";
+	display_text.push(new DisplayLine("Sector " + sectorName + (Mathf.Abs(sector)), true));
 	if(!show_help){
 		display_text.push(new DisplayLine("View help: Press [ ? ]", !help_ever_shown));
 	} else {
@@ -1689,4 +1687,24 @@ function OnGUI() {
 	    GUI.color = Color(1,1,1,win_fade);
 	    GUI.DrawTexture(Rect(0,0,Screen.width,Screen.height), texture_death_screen, ScaleMode.StretchToFill, true);
 	}
+}
+
+function Respawn()
+{
+	// reset state
+	SetDead(false);
+	
+	health = 1.0;
+	dying = false;
+	dead = false;
+	won = false;
+	dead_fade = 0.0;
+	
+	// reset transform
+	transform.position = spawn_position;
+	transform.rotation = spawn_rotation;
+	
+	transform.position.y += 0.2;
+	
+	// TODO: death penalty
 }

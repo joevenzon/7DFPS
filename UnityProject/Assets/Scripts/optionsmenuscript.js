@@ -174,7 +174,7 @@ function Update() {
     if(Input.GetMouseButtonDown(0) && !show_menu){
         Screen.lockCursor = true;
     }
-    if(show_menu){
+    if(show_menu && !Network.isClient && !Network.isServer){
     	Time.timeScale = 0.0;
     } else {
     	if(Time.timeScale == 0.0){
